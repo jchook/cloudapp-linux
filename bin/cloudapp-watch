@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+
+if [ -z "$1" ]; then
+	echo "You must specify a file or directory to watch" > /dev/stderr
+	exit 1
+fi
+
+inotifywait -m -e create --format '%w%f' "$1" | cloudapp -

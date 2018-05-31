@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# 
+# CloudApp Uploader
+# @author Wes Roberts <me@jchook.com>
+# @since 2018-05-16
+#
+
+# Exit on any errors
+set -e
+
+# Default options
+JQ_FILTER=${JQ_FILTER:-'.share_url'}
+
+# Figure out clipboard
+if type xclip &> /dev/null; then
+	clipboard="xclip -selection clipboard"
+elif type pbcopy &> /dev/null; then
+	clipboard="pbcopy"
+elif type clipboard &> /dev/null; then
+	clipboard="clipboard"
+else
+	echo "Error: missing clipboard" > /dev/stderr
+	exit 1
+fi
+
+# Required programs
+for req in jq curl; do
+	if ! type "$req" &> /dev/null; then
+		echo 'Error: missing '"$req" > /dev/stderr
+		exit 1
+	fi
+done
+
+# Required env vars
+for req in CLOUDAPP_USERNAME CLOUDAPP_PASSWORD; do
+	if [ -z "${!req}" ]; then
+		echo 'Error: missing '"$req" > /dev/stderr
+		exit 2
+	fi
+done
+
+# File is the first argument
+file="$1"
+
+# Read filenames from stdin?
+if [[ "$file" == '-' || -z "$file" ]]; then
+	while read -r file; do
+		"$0" "$file"
+	done
+	exit 0
+
+# Specified file exists?
+elif [ ! -f "$file" ]; then
+	echo "File does not exist: $file" > /dev/stderr
+	exit 1
+fi
+
+# Bashism for basename
+filename="${file##*/}"
+
+# Convert the filename to a JSON string
+filejson=$(jq -aR . <<< $filename)
+
+# Request upload from CloudApp
+# Also replace the weird ${filename} part of .s3.key with the actual $filename
+resp=$(
+	curl -s -X POST --digest -u "$CLOUDAPP_USERNAME:$CLOUDAPP_PASSWORD" \
+	  -H "Accept: application/json" \
+	  -H "Content-Type: application/json" \
+	  -d "{\"name\":$filejson}" \
+	  "https://my.cl.ly/v3/items"
+)
+
+# Scoop the URL
+url=$(jq -j '.url' <<< $resp)
+
+# Convert response JSON to cURL arguments
+args=$(jq -j '
+	.s3 
+		| to_entries 
+		| map(["-F ", (.key | tostring), "=", (.value | tostring)] | join(""))
+		| join(" ")
+' <<< $resp)
+
+# Upload to S3, storing callback
+redirect=$(
+	curl -s --include -X POST $args -F file=@"$file" "$url" \
+		| grep -oP '(?<=Location: )https[^\s]+'
+)
+
+# Callback to CloudApp
+result=$(
+	curl -s --digest -u "$CLOUDAPP_USERNAME:$CLOUDAPP_PASSWORD" "$redirect"
+);
+
+# Print result
+jq . <<< "$result"
+
+# Get the share url only
+selected=$(jq -j "$JQ_FILTER" <<< "$result")
+
+# Copy it to the clipboard
+$clipboard <<< "$selected"
+
+# Make some kind of notice about it
+if type notify-send &> /dev/null; then
+	notify-send "CloudApp" "$selected"
+fi

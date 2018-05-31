@@ -1,0 +1,2 @@
+#!/bin/sh
+kill "$@" $(ps aux | grep -v grep | grep cloudapp-watch | awk '{ print $2 }')

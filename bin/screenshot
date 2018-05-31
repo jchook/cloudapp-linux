@@ -1,0 +1,5 @@
+#!/bin/sh
+SCREENSHOT_DIR=${SCREENSHOT_DIR:-"$HOME/screenshots"}
+SCREENSHOT_FILE_FORMAT=${SCREENSHOT_FILE_FORMAT:-"%Y-%m-%d-%H%M%S_\$wx\$h.png"}
+mkdir -p "$SCREENSHOT_DIR"
+sleep 0.2; scrot -s "$SCREENSHOT_DIR/$SCREENSHOT_FILE_FORMAT" -e "xdg-open \$f"
