@@ -1,11 +1,13 @@
 # CloudApp for Linux
 
-An unofficial cloudapp tool for linux.
+Unofficial [CloudApp](https://www.getcloudapp.com/) scripts for linux.
+
+I use this software on a daily basis to quickly share files, screenshots, and screen recordings with friends, family, clients, or co-workers.
 
 
 ## Features
 
-These scripts do exactly what I need, and not a lot else:
+So far it does everything I need:
 
 * Command-line upload to CloudApp
 * Automatic upload to CloudApp when a screenshot or video is taken
@@ -33,7 +35,8 @@ CLOUDAPP_USERNAME=you@email.com
 CLOUDAPP_PASSWORD=$(cat "$HOME/.cloudapp-password")' >> ~/.profile
 ```
 
-## System Requirements
+
+### System Requirements
 
 Make sure you have these programs installed:
 
@@ -53,6 +56,23 @@ sudo apt-get install jq curl xclip scrot inotify-tools
 ```
 
 
+## Command-Line Upload
+
+Once everything is installed, command-line upload is very easy:
+
+```sh
+cloudapp /path/to/file.png
+```
+
+It will automatically copy the share link to your clipboard and output the entire server response as pretty json.
+
+You can use the special filename `-` to pass it via stdin:
+
+```sh
+echo /path/to/file | cloudapp -
+```
+
+
 ## Automatic Upload
 
 You can set-up a directory watcher to automatically upload any newly created files:
@@ -63,7 +83,7 @@ cloudapp-watch ~/screenshots
 
 I added this to my `~/.xsession` file to start it on login.
 
-If watchers are stuck or you want to stop watching, this script will kill them:
+If watchers get stuck or you want to stop watching, this script will kill them:
 
 ```sh
 cloudapp-unwatch
@@ -88,7 +108,7 @@ peek
 
 ## Configuration
 
-Available configuration options are shown in `env.sample`:
+Available configuration options:
 
 ```sh
 # Required
