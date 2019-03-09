@@ -20,19 +20,14 @@ Installing is pretty straightforward.
 
 1. Clone the repo (or download it)
 2. Add the `cloudapp-linux/bin` directory to your `$PATH`.
-3. Configure your login and password
+3. Run `cloudapp` to configure your login and password.
 
-Here is what I would run:
+For example:
 
 ```sh
-git clone git@github.com:jchook/cloudapp-linux.git ~/.cloudapp-linux
-echo 'your-cloudapp-password' > ~/.cloudapp-password
-chmod 600 ~/.cloudapp-password
-echo '
-# CloudApp
-PATH="$HOME/.cloudapp-linux/bin:$PATH"
-CLOUDAPP_USERNAME=you@email.com
-CLOUDAPP_PASSWORD=$(cat "$HOME/.cloudapp-password")' >> ~/.profile
+git clone git@github.com:jchook/cloudapp-linux.git
+sudo cp cloudapp-linux/bin/cloudapp* /usr/local/bin
+cloudapp
 ```
 
 
@@ -69,7 +64,7 @@ It will automatically copy the share link to your clipboard and output the entir
 You can use the special filename `-` to pass it via stdin:
 
 ```sh
-echo /path/to/file | cloudapp -
+cloudapp --name file.txt - < /path/to/file.txt
 ```
 
 
@@ -116,7 +111,11 @@ CLOUDAPP_USERNAME=you@email.com
 CLOUDAPP_PASSWORD=your-password
 
 # What gets copied to the clipboard
-JQ_FILTER=.share_url
+CLOUDAPP_JQ_FILTER=.share_url
+
+# Copy to clipboard + notify?
+CLOUDAPP_NO_COPY=
+CLOUDAPP_NO_NOTIFY=
 
 # Where to save screenshots
 SCREENSHOT_DIR="$HOME/screenshots"

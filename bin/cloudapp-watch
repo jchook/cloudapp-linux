@@ -1,9 +1,56 @@
-#!/bin/sh
+#!/usr/bin/env bash
 set -e
 
+# Report usage
+usage() {
+  local bold=$(tput bold)
+  local normal=$(tput sgr0)
+  echo "
+  ${bold}USAGE${normal}
+
+    $(basename "$0") [options] <path> ...
+
+
+  ${bold}OPTIONS${normal}
+
+    See ${bold}fswatch(1)${normal} for additional options.
+
+    <path> ...
+      List of directories to watch.
+      Uploads newly created files to cloudapp.
+  " >&2
+
+  # Optionally exit with a status code
+  if [ -n "$1" ]; then
+    exit "$1"
+  fi
+}
+
+# Help?
 if [ -z "$1" ]; then
-	echo "You must specify a file or directory to watch" > /dev/stderr
-	exit 1
+  usage 1
+elif [[ "$1" == '-h' ]] || [[ "$1" == "--help" ]]; then
+  usage 0
 fi
 
-inotifywait -m -e create --format '%w%f' "$1" | cloudapp -
+
+cloudappUpload() {
+  while IFS='' read -r line || [[ -n "$line" ]]; do
+    cloudapp "$line"
+  done
+}
+
+
+# Cross-platform
+if type fswatch &>/dev/null; then
+  fswatch --event=Created "$@" | cloudappUpload
+
+# Linux
+# elif type inotifywait &>/dev/null; then
+#   inotifywait -m -e create --format '%w%f' "$@" | cloudapp --stdin
+
+# Error
+else
+  echo "Missing dependency: fswatch" >&2
+  exit 1
+fi

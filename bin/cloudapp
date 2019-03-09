@@ -1,108 +1,290 @@
 #!/usr/bin/env bash
-# 
+#
 # CloudApp Uploader
 # @author Wes Roberts <me@jchook.com>
 # @since 2018-05-16
+#
+# Kill all the cloudapp shit
+# kill $(ps aux | grep -v grep | grep cloudapp | awk '{ print $2 }')
 #
 
 # Exit on any errors
 set -e
 
-# Default options
-JQ_FILTER=${JQ_FILTER:-'.share_url'}
+# Default config location
+CLOUDAPP_CONFIG=${CLOUDAPP_CONFIG:-"$HOME/.config/cloudapp"}
 
-# Figure out clipboard
-if type xclip &> /dev/null; then
-	clipboard="xclip -selection clipboard"
-elif type pbcopy &> /dev/null; then
-	clipboard="pbcopy"
-elif type clipboard &> /dev/null; then
-	clipboard="clipboard"
-else
-	echo "Error: missing clipboard" > /dev/stderr
-	exit 1
-fi
+# Default JQ filter
+CLOUDAPP_JQ_FILTER=${CLOUDAPP_JQ_FILTER:-'.share_url'}
+
+# Do we read a file list from STDIN?
+CLOUDAPP_READ_STDIN=
 
 # Required programs
-for req in jq curl; do
-	if ! type "$req" &> /dev/null; then
-		echo 'Error: missing '"$req" > /dev/stderr
-		exit 1
-	fi
+for req in jq curl fswatch; do
+  if ! type "$req" &> /dev/null; then
+    echo 'Error: missing dependency '"$req" >&2
+    echo >&2
+    echo "  sudo apt get install $req" >&2
+    exit 1
+  fi
 done
 
-# Required env vars
-for req in CLOUDAPP_USERNAME CLOUDAPP_PASSWORD; do
-	if [ -z "${!req}" ]; then
-		echo 'Error: missing '"$req" > /dev/stderr
-		exit 2
-	fi
-done
+# Report usage
+usage() {
+  local bold=$(tput bold)
+  local normal=$(tput sgr0)
+  local cmd=$(basename "$0")
+  echo "
+  ${bold}USAGE${normal}
 
-# File is the first argument
-file="$1"
+    $cmd [options] [--] [<file> | -] ...
 
-# Read filenames from stdin?
-if [[ "$file" == '-' || -z "$file" ]]; then
-	while read -r file; do
-		"$0" "$file"
-	done
-	exit 0
 
-# Specified file exists?
-elif [ ! -f "$file" ]; then
-	echo "File does not exist: $file" > /dev/stderr
-	exit 1
+  ${bold}OPTIONS${normal}
+
+    -c, --config <file>
+      Load a custom configuration file.
+
+    -n, --name <name>
+      Choose a custom name for an uploaded file.
+      Use multiple times (in order) for multiple files.
+
+    --no-copy
+      Prevent copying the share URL to clipboard.
+      Use the config file to customize which info gets copied to clipbard,
+      e.g. CLOUDAPP_JQ_FILTER=.content_url
+
+    --no-notify
+      Prevent notifications via inotify.
+
+    -p, --password <password>
+      Use a password. Empty string for interactive prompt.
+
+    -q, --quiet
+      Don't print extra information to STDOUT.
+
+    -s, --silent
+      Equivalent of -q --nocopy --no-notify.
+
+    --short, +short
+      Only print the share URL to STDOUT.
+
+    --stdin
+      Read a newline-separated file list from STDIN.
+
+    -u, --username <username>
+      Use a specific username.
+
+    <file> ...
+      Path(s) to the file(s) you want to upload.
+      Specify a hyphen (-) to pipe data from stdin.
+
+
+  ${bold}EXAMPLES${normal}
+
+    - Upload a single file
+        $cmd file.txt
+
+    - Upload a few files
+        $cmd file1.txt file2.mp3
+
+    - Upload from STDIN
+        curl api.ipify.org | $cmd --name ip.txt -
+  " >&2
+
+  # Optionally exit with a status code
+  if [ -n "$1" ]; then
+    exit "$1"
+  fi
+}
+
+if [ -z "$*" ]; then
+  usage 1
 fi
 
-# Bashism for basename
-filename="${file##*/}"
+# Share urls
+shareurls=()
 
-# Convert the filename to a JSON string
-filejson=$(jq -aR . <<< $filename)
+# Name the files
+names=()
 
-# Request upload from CloudApp
-# Also replace the weird ${filename} part of .s3.key with the actual $filename
-resp=$(
-	curl -s -X POST --digest -u "$CLOUDAPP_USERNAME:$CLOUDAPP_PASSWORD" \
-	  -H "Accept: application/json" \
-	  -H "Content-Type: application/json" \
-	  -d "{\"name\":$filejson}" \
-	  "https://my.cl.ly/v3/items"
-)
+# Get Options
+END_OF_OPT=
+while [[ $# -gt 0 ]]; do
+  case "${END_OF_OPT}${1}" in
+    -h|--help)      usage 0 ;;
+    -c|--config)    shift; CLOUDAPP_CONFIG="$1" ;;
+    -p|--password)  shift; CLOUDAPP_PASSWORD="$1" ;;
+    -u|--username)  shift; CLOUDAPP_USERNAME="${1}" ;;
+    -n|--name)      shift; names+=("$1") ;;
+    -q|--quiet)     CLOUDAPP_QUIET=1 ;;
+    -s|--silent)    CLOUDAPP_QUIET=1; CLOUDAPP_NO_COPY=1; CLOUDAPP_NO_NOTIFY=1 ;;
+    --no-copy)      CLOUDAPP_NO_COPY=1 ;;
+    --no-notify)    CLOUDAPP_NO_NOTIFY=1 ;;
+    --short|+short) CLOUDAPP_SHORT=1 ;;
+    --stdin)        CLOUDAPP_READ_STDIN=1 ;;
+    --)             END_OF_OPT=1 ;;
+    *)              POSITIONAL+=("$1")
+  esac
+  shift
+done
 
-# Scoop the URL
-url=$(jq -j '.url' <<< $resp)
+# Restore positional parameters
+set -- "${POSITIONAL[@]}"
 
-# Convert response JSON to cURL arguments
-args=$(jq -j '
-	.s3 
-		| to_entries 
-		| map(["-F ", (.key | tostring), "=", (.value | tostring)] | join(""))
-		| join(" ")
-' <<< $resp)
+# Ddefault clipboard app
+if [ -z "$CLOUDAPP_CLIPBOARD" ] && [ -z "$CLOUDAPP_NO_COPY" ]; then
+  if type xclip &> /dev/null; then
+    CLOUDAPP_CLIPBOARD="xclip -selection clipboard"
+  elif type pbcopy &> /dev/null; then
+    CLOUDAPP_CLIPBOARD="pbcopy"
+  elif type clipboard &> /dev/null; then
+    CLOUDAPP_CLIPBOARD="clipboard"
+  else
+    echo "Error: missing clipboard" >&2
+    exit 1
+  fi
+fi
 
-# Upload to S3, storing callback
-redirect=$(
-	curl -s --include -X POST $args -F file=@"$file" "$url" \
-		| grep -oP '(?<=Location: )https[^\s]+'
-)
+# Require config
+if [ -f "$CLOUDAPP_CONFIG" ]; then
+  . "$CLOUDAPP_CONFIG"
+else
+  read -p 'CloudApp Username: ' CLOUDAPP_USERNAME
+  read -sp 'CloudApp Password: ' CLOUDAPP_PASSWORD
+  echo "CLOUDAPP_USERNAME='$CLOUDAPP_USERNAME'" > "$CLOUDAPP_CONFIG"
+  echo "CLOUDAPP_PASSWORD='$CLOUDAPP_PASSWORD'" >> "$CLOUDAPP_CONFIG"
+  chmod 600 "$CLOUDAPP_CONFIG"
+fi
 
-# Callback to CloudApp
-result=$(
-	curl -s --digest -u "$CLOUDAPP_USERNAME:$CLOUDAPP_PASSWORD" "$redirect"
-);
+# Require username
+if [ -z "$CLOUDAPP_USERNAME" ]; then
+  echo "Error: missing CLOUDAPP_USERNAME" >&2
+  exit 1
+fi
 
-# Print result
-jq . <<< "$result"
+# Require password
+if [ -z "$CLOUDAPP_PASSWORD" ]; then
+  read -sp 'CloudApp Password: ' CLOUDAPP_PASSWORD
+fi
 
-# Get the share url only
-selected=$(jq -j "$JQ_FILTER" <<< "$result")
+# Keep track of which # file we're uploading
+ITER=0
 
-# Copy it to the clipboard
-$clipboard <<< "$selected"
+#
+# Upload a file to cloudapp
+#
+upload() {
+  local file="$1"
+  local filename="${names[$ITER]}"
+  ITER=$(($ITER+1))
 
-# Make some kind of notice about it
-if type notify-send &> /dev/null; then
-	notify-send "CloudApp" "$selected"
+  # Specified file exists?
+  if [[ "$file" != '-' ]] && [ ! -f "$file" ]; then
+    echo "File does not exist: $file" >&2
+    return 1
+  fi
+
+  # Bashism for basename
+  if [ -z "$filename" ]; then
+    filename="${file##*/}"
+  fi
+
+  # Convert the filename to a JSON string
+  filejson="$(jq -aR . <<< "$filename")"
+
+  # Request upload from CloudApp
+  # Also replace the weird ${filename} part of .s3.key with the actual $filename
+  resp="$(
+    curl -s -X POST --digest -u "$CLOUDAPP_USERNAME:$CLOUDAPP_PASSWORD" \
+      -H "Accept: application/json" \
+      -H "Content-Type: application/json" \
+      -d "{\"name\":$filejson}" \
+      "https://my.cl.ly/v3/items"
+  )"
+
+  # Example Output:
+  # {
+  #   "slug": "1h132K0z2n3G",
+  #   "name": "Image.png",
+  #   "url": "http://f.cl.ly",
+  #   "uploads_remaining": 1,
+  #   "max_upload_size": 26214400,
+  #   "s3": {
+  #     "AWSAccessKeyId": "AKIAJP2C6U543KJIE2GA",
+  #     "key": "items/353u2B053p0H0D1O3w1b/${filename}",
+  #     "policy": "eyJleHBpcmF0aW9uIjoiMjAxNS0xMS0xMlQxMjo0MTozOFoiLCJjb25kaXRpb25zIjpbeyJidWNrZXQiOiJjbG91ZGFwcC5jb3BwZXIuaW8ifSxbInN0YXJ0cy13aXRoIiwiJGtleSIsIml0ZW1zLzM1M3UyQjA1M3AwSDBEMU8zdzFiLyJdLHsic3VjY2Vzc19hY3Rpb25fcmVkaXJlY3QiOiJodHRwOi8vbXkuY2wuZGV2L3YzL2l0ZW1zLzFoMTMySzB6Mm4zRy9zMyJ9LHsiYWNsIjoicHVibGljLXJlYWQifSxbImNvbnRlbnQtbGVuZ3RoLXJhbmdlIiwwLDI2MjE0NDAwXV19",
+  #     "signature": "wqSVl9+fvkvtIzGfakNF+drqN0s=",
+  #     "success_action_redirect": "http://api.cl.ly/v3/items/1h132K0z2n3G/s3",
+  #     "acl": "public-read"
+  #   }
+  # }
+
+  # Scoop the URL
+  url="$(jq -j '.url' <<< "$resp")"
+
+  # Convert response JSON to cURL arguments
+  args="$(jq -j '
+    .s3
+      | to_entries
+      | map(["-F ", (.key | tostring), "=", (.value | tostring)] | join(""))
+      | join(" ")
+  ' <<< "$resp")"
+
+  # Upload to S3
+  if [[ "$file" == '-' ]]; then
+    resp="$(cat | curl -s --include -X POST $args -F "file=@$file;filename=$filename" "$url")"
+  else
+    resp="$(curl -s --include -X POST $args -F "file=@$file;filename=\"$filename\"" "$url")"
+  fi
+
+  # Extract callback url from headers
+  callback=$(echo "$resp" | grep -oP '(?<=Location: )https[^\s]+')
+
+  # Callback to CloudApp
+  result="$(
+    curl -s --digest -u "$CLOUDAPP_USERNAME:$CLOUDAPP_PASSWORD" "$callback"
+  )"
+
+  # Get share url
+  selected="$(jq -j "$CLOUDAPP_JQ_FILTER" <<< "$result")"
+
+  # Print result
+  if [ -z "$CLOUDAPP_QUIET" ]; then
+    if [ -z "$CLOUDAPP_SHORT" ]; then
+      jq . <<< "$result"
+    else
+      echo "$selected"
+    fi
+  fi
+
+  # Store the result in the shareurls
+  shareurls+=("$selected")
+
+  # Notify user
+  if [ -z "$CLOUDAPP_NO_NOTIFY" ]; then
+    if type notify-send &> /dev/null; then
+      notify-send "CloudApp" "$selected"
+    fi
+  fi
+}
+
+# Upload file list from args?
+if [ -z "$CLOUDAPP_READ_STDIN" ]; then
+  while [[ $# -gt 0 ]]; do
+    upload "$1"
+    shift
+  done
+
+# Upload file list from STDIN?
+else
+  while IFS='' read -r line || [[ -n "$line" ]]; do
+    upload "$line"
+  done
+fi
+
+# Copy all URLs to clipboard
+if [ -z "$CLOUDAPP_NO_COPY" ]; then
+  printf '%s\n' "${shareurls[@]}" | $CLOUDAPP_CLIPBOARD
 fi
